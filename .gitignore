@@ -3,3 +3,4 @@ venv/
 users.json
 chats.json
 __pycache__/
+datasets/*.csv
