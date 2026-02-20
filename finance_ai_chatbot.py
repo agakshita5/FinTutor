@@ -150,7 +150,7 @@ class FinanceAIChatbot:
 if __name__ == "__main__":
     try:
         api_key = os.getenv("AI_API_KEY")
-        dataset_path = "final_combined.csv" 
+        dataset_path = "datasets/final_combined.csv" 
 
         if not api_key:
             raise ValueError("API key not found! Please set it in your .env file.")
