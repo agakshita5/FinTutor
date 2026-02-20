@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from finance_ai_chatbot import FinanceAIChatbot
+from download_dataset import download_dataset
 from datetime import datetime
 import os
 import json
@@ -25,6 +26,9 @@ if not os.path.exists(USERS_FILE):
 if not os.path.exists(CHATS_FILE):
     with open(CHATS_FILE, 'w') as f:
         json.dump({}, f)
+
+if not download_dataset():
+    print("Warning: Could not download dataset.")
 
 try:
     bot = FinanceAIChatbot(api_key, "datasets/final_combined.csv")
