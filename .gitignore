@@ -2,3 +2,4 @@ venv/
 .env
 users.json
 chats.json
+__pycache__/
