@@ -2,7 +2,7 @@
 
 An intelligent financial chatbot that answers your personal finance questions using AI. Ask anything about budgeting, investments, taxes, loans, and financial planning. Get instant, personalized guidance powered by Google Gemini AI and a comprehensive knowledge base of 40K+ financial FAQs.
 
-**[View Live Demo](...)** 
+**[View Live Demo](https://agakshita-fintutor.hf.space)** 
 
 ## 📝 What It Does
 
