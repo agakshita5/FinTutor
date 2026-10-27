@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Finance AI Assistant</title>
+  <title>FinTutor</title>
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
     body {
@@ -11,35 +11,6 @@
       background:linear-gradient(135deg,#00c6ff 0%,#00736d 100%);
       min-height:100vh; color:#222;
     }
-
-    /* Login Popup */
-    .login-popup {
-      position:fixed; top:0; left:0; width:100%; height:100%;
-      background:rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center;
-      z-index:1000;
-    }
-    .login-popup.hidden { display:none; }
-    .login-box {
-      background:white; padding:40px; border-radius:20px;
-      box-shadow:0 20px 60px rgba(0,0,0,0.3); max-width:400px; width:90%;
-    }
-    .login-box h2 { margin-bottom:20px; color:#00736d; }
-    .login-box input {
-      width:100%; padding:12px; margin:10px 0; border:2px solid #ddd;
-      border-radius:8px; font-size:15px;
-    }
-    .login-box button {
-      width:100%; padding:12px; margin:10px 0; border:none; border-radius:8px;
-      font-weight:600; cursor:pointer; font-size:15px; transition:all .3s;
-    }
-    .login-box .btn-login {
-      background:linear-gradient(135deg,#00bfa5,#00796b); color:white;
-    }
-    .login-box .btn-login:hover { transform:translateY(-2px); }
-    .login-box .btn-skip {
-      background:#e0e0e0; color:#666;
-    }
-    .login-box .btn-skip:hover { background:#d0d0d0; }
 
     /* Main Layout */
     .main-container {
@@ -57,16 +28,12 @@
       color:white; font-size:18px; font-weight:600; margin-bottom:20px;
       display:flex; justify-content:space-between; align-items:center;
     }
-    .user-info {
-      background:rgba(255,255,255,0.1); padding:15px; border-radius:12px;
-      color:white; margin-bottom:20px; font-size:14px;
+    .new-chat-btn {
+      width:100%; padding:10px; margin-bottom:15px; background:rgba(255,255,255,0.2);
+      border:none; border-radius:8px; color:white; cursor:pointer; font-size:14px;
     }
-    .logout-btn {
-      margin-top:10px; padding:8px; background:rgba(255,255,255,0.2);
-      border:none; border-radius:6px; color:white; cursor:pointer;
-      width:100%; font-size:13px;
-    }
-    .logout-btn:hover { background:rgba(255,255,255,0.3); }
+    .new-chat-btn:hover { background:rgba(255,255,255,0.3); }
+    .sidebar-note { color:rgba(255,255,255,0.7); font-size:12px; margin-bottom:10px; }
     .chat-history-item {
       background:rgba(255,255,255,0.1); padding:12px; margin:10px 0;
       border-radius:10px; color:white; cursor:pointer;
@@ -108,6 +75,10 @@
     .message.bot .message-content{
       background:rgba(255,255,255,0.2);color:#f8f9ff;backdrop-filter:blur(10px);
     }
+    .message.bot.no-match .message-content{ border:1px dashed rgba(255,255,255,0.6); }
+    .sources{ margin-top:10px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.3);
+      font-size:12px; opacity:0.85; white-space:normal; }
+    .sources ol{ margin:4px 0 0 18px; }
     .loading{display:flex;gap:6px;align-items:center;padding:10px;}
     .loading-dot{width:8px;height:8px;border-radius:50%;background:#fff;animation:bounce 1.4s infinite ease-in-out both;}
     .loading-dot:nth-child(1){animation-delay:-.32s;}
@@ -142,18 +113,6 @@
   </style>
 </head>
 <body>
-  <!-- Login Popup -->
-  <div id="loginPopup" class="login-popup">
-    <div class="login-box">
-      <h2>Welcome!</h2>
-      <p style="margin-bottom:20px; color:#666;">Login to save your chat history</p>
-      <input type="text" id="username" placeholder="Username" />
-      <input type="password" id="password" placeholder="Password" />
-      <button class="btn-login" onclick="login()">Login</button>
-      <button class="btn-skip" onclick="skipLogin()">Continue without login</button>
-    </div>
-  </div>
-
   <!-- Main Container -->
   <div class="main-container">
     <!-- Sidebar -->
@@ -161,10 +120,8 @@
       <div class="sidebar-header">
         <span>Chat History</span>
       </div>
-      <div id="userInfo" class="user-info" style="display:none;">
-        <div>Logged in as: <strong id="displayUsername"></strong></div>
-        <button class="logout-btn" onclick="logout()">Logout</button>
-      </div>
+      <button class="new-chat-btn" onclick="newChat()">+ New chat</button>
+      <div class="sidebar-note">Saved in this browser tab only.</div>
       <div id="chatHistoryList"></div>
     </div>
 
@@ -173,13 +130,13 @@
       <div class="chat-header">
         <div style="display:flex; align-items:center;">
           <button class="toggle-sidebar-btn" onclick="toggleSidebar()">☰</button>
-          <h1 style="margin-left:15px;">Finance AI Assistant</h1>
+          <h1 style="margin-left:15px;">FinTutor</h1>
           <span id="status" class="status offline">● Offline</span>
         </div>
       </div>
       <div id="chatMessages"></div>
       <div class="chat-input-area">
-        <input id="chatInput" placeholder="Ask about investments, stocks, or budgeting..." 
+        <input id="chatInput" placeholder="Ask about investing, credit cards, taxes or loans..."
                onkeypress="if(event.key==='Enter') sendMessage()">
         <button class="mic-btn" id="micBtn" title="Speak"><span class="mic-icon">🎤</span></button>
         <button class="btn" onclick="sendMessage()">Send</button>
@@ -188,16 +145,15 @@
   </div>
 
   <script>
-    const API_URL = "http://localhost:5000";
     const statusEl = document.getElementById("status");
-    let currentUser = null;
-    let currentChatId = null;
-    let currentMessages = [];
+    const chatMessages = document.getElementById("chatMessages");
+    const chatInput = document.getElementById("chatInput");
+    const STORE_KEY = "fintutor_chats";
 
     // Check health
     async function checkHealth(){
       try{
-        const res = await fetch(`${API_URL}/health`);
+        const res = await fetch("/health");
         const data = await res.json();
         if(data.chatbot_ready){
           statusEl.textContent="● Online";
@@ -210,139 +166,117 @@
     }
     checkHealth(); setInterval(checkHealth,10000);
 
-    // Login
-    async function login(){
-      const username = document.getElementById("username").value.trim();
-      const password = document.getElementById("password").value.trim();
-      if(!username || !password) return alert("Enter username and password!");
-      
-      try{
-        const res = await fetch(`${API_URL}/login`, {
-          method:"POST", headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({username, password})
-        });
-        const data = await res.json();
-        if(data.success){
-          currentUser = username;
-          document.getElementById("loginPopup").classList.add("hidden");
-          document.getElementById("userInfo").style.display="block";
-          document.getElementById("displayUsername").textContent = username;
-          loadChatHistory();
-        }else{
-          alert(data.message || "Login failed!");
-        }
-      }catch(e){
-        alert("Login error: " + e.message);
-      }
+    // Chat history lives in sessionStorage: per tab, nothing stored on the server.
+    function loadChats(){
+      try{ return JSON.parse(sessionStorage.getItem(STORE_KEY)) || {}; }catch{ return {}; }
     }
-
-    function skipLogin(){
-      document.getElementById("loginPopup").classList.add("hidden");
+    function saveChats(chats){
+      try{ sessionStorage.setItem(STORE_KEY, JSON.stringify(chats)); }catch{}
     }
+    let chats = loadChats();
+    let currentChatId = null;
 
-    function logout(){
-      currentUser = null;
-      currentChatId = null;
-      currentMessages = [];
-      document.getElementById("userInfo").style.display="none";
-      document.getElementById("chatHistoryList").innerHTML = "";
-      document.getElementById("chatMessages").innerHTML = "";
-      document.getElementById("loginPopup").classList.remove("hidden");
-    }
-
-    // Toggle Sidebar
     function toggleSidebar(){
       document.getElementById("sidebar").classList.toggle("collapsed");
     }
 
-    // Load Chat History
-    async function loadChatHistory(){
-      if(!currentUser) return;
-      try{
-        const res = await fetch(`${API_URL}/chat_history?username=${currentUser}`);
-        const data = await res.json();
-        const list = document.getElementById("chatHistoryList");
-        list.innerHTML = "";
-        data.chats.forEach(chat => {
-          list.innerHTML += `
-            <div class="chat-history-item" onclick="loadChat('${chat.id}')">
-              ${chat.title}
-              <small>${new Date(chat.timestamp).toLocaleString()}</small>
-            </div>`;
-        });
-      }catch(e){
-        console.error("Error loading chat history:", e);
-      }
+    function renderHistory(){
+      const list = document.getElementById("chatHistoryList");
+      list.innerHTML = "";
+      Object.values(chats).sort((a,b) => b.timestamp.localeCompare(a.timestamp)).forEach(chat => {
+        const item = document.createElement("div");
+        item.className = "chat-history-item";
+        item.textContent = chat.title;
+        const when = document.createElement("small");
+        when.textContent = new Date(chat.timestamp).toLocaleString();
+        item.appendChild(when);
+        item.onclick = () => openChat(chat.id);
+        list.appendChild(item);
+      });
     }
 
-    // Load specific chat
-    async function loadChat(chatId){
-      try{
-        const res = await fetch(`${API_URL}/load_chat?username=${currentUser}&chat_id=${chatId}`);
-        const data = await res.json();
-        currentChatId = chatId;
-        currentMessages = data.messages;
-        
-        const chatMessages = document.getElementById("chatMessages");
-        chatMessages.innerHTML = "";
-        data.messages.forEach(msg => {
-          addChatMessage(msg.text, msg.isUser);
-        });
-      }catch(e){
-        console.error("Error loading chat:", e);
-      }
+    function openChat(id){
+      currentChatId = id;
+      chatMessages.innerHTML = "";
+      chats[id].messages.forEach(m => addChatMessage(m));
     }
 
-    // Chat Logic
-    const chatMessages=document.getElementById("chatMessages");
-    const chatInput=document.getElementById("chatInput");
+    function newChat(){
+      currentChatId = null;
+      chatMessages.innerHTML = "";
+      chatInput.focus();
+    }
 
-    function addChatMessage(text,isUser){
-      const div=document.createElement("div");
-      div.className=`message ${isUser?'user':'bot'}`;
-      div.innerHTML=`<div class="message-content">${text}</div>`;
+    // textContent, never innerHTML: messages contain user input and model output.
+    function addChatMessage({text, isUser, sources, status}){
+      const div = document.createElement("div");
+      div.className = `message ${isUser ? "user" : "bot"}${status === "no_match" ? " no-match" : ""}`;
+      const content = document.createElement("div");
+      content.className = "message-content";
+      content.textContent = text;
+      if(sources && sources.length){
+        const box = document.createElement("div");
+        box.className = "sources";
+        box.textContent = "Sources (similar questions from the knowledge base):";
+        const ol = document.createElement("ol");
+        sources.forEach(s => {
+          const li = document.createElement("li");
+          li.textContent = `${s.question} (similarity ${s.similarity.toFixed(2)})`;
+          ol.appendChild(li);
+        });
+        box.appendChild(ol);
+        content.appendChild(box);
+      }
+      div.appendChild(content);
       chatMessages.appendChild(div);
-      chatMessages.scrollTop=chatMessages.scrollHeight;
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    function record(msg){
+      if(!currentChatId){
+        currentChatId = `chat_${Date.now()}`;
+        const title = msg.text.length > 50 ? msg.text.slice(0,50) + "..." : msg.text;
+        chats[currentChatId] = {id: currentChatId, title, timestamp: new Date().toISOString(), messages: []};
+      }
+      chats[currentChatId].messages.push(msg);
+      saveChats(chats);
+      renderHistory();
     }
 
     async function sendMessage(){
-      const msg=chatInput.value.trim();
-      if(!msg) return;
-      
-      addChatMessage(msg,true);
-      currentMessages.push({text:msg, isUser:true});
-      chatInput.value="";
-      
-      const loading=document.createElement("div");
-      loading.className="message bot";
-      loading.innerHTML=`<div class="message-content loading">
+      const text = chatInput.value.trim();
+      if(!text) return;
+
+      const userMsg = {text, isUser: true};
+      addChatMessage(userMsg);
+      record(userMsg);
+      chatInput.value = "";
+
+      const loading = document.createElement("div");
+      loading.className = "message bot";
+      loading.innerHTML = `<div class="message-content loading">
         <div class="loading-dot"></div><div class="loading-dot"></div><div class="loading-dot"></div>
       </div>`;
       chatMessages.appendChild(loading);
-      
+
+      let botMsg;
       try{
-        const res=await fetch(`${API_URL}/chat`,{
-          method:"POST",headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({
-            message:msg, 
-            username:currentUser, 
-            chat_id:currentChatId
-          })
+        const res = await fetch("/chat", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({message: text})
         });
-        const data=await res.json();
-        loading.remove();
-        
-        addChatMessage(data.response||"No response.",false);
-        currentMessages.push({text:data.response, isUser:false});
-        
-        if(data.chat_id) currentChatId = data.chat_id;
-        if(currentUser) loadChatHistory();
-        
+        const data = await res.json();
+        botMsg = {text: data.response || "No response.", isUser: false,
+                  sources: data.sources || [], status: data.status};
       }catch{
-        loading.remove();
-        addChatMessage("Could not connect to backend.",false);
+        botMsg = {text: "Could not connect to backend.", isUser: false};
       }
+      loading.remove();
+      addChatMessage(botMsg);
+      record(botMsg);
     }
+
+    renderHistory();
 
     // Voice Recognition
     const micBtn=document.getElementById("micBtn");
