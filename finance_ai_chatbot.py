@@ -1,164 +1,133 @@
 import os
 import re
-import pandas as pd
+import time
 from datetime import datetime, timedelta
-import warnings
-from sentence_transformers import SentenceTransformer
-import chromadb
-import google.generativeai as genai
-from dotenv import load_dotenv
 
-warnings.filterwarnings("ignore")
+import chromadb
+from dotenv import load_dotenv
+from groq import Groq
+from sentence_transformers import SentenceTransformer
+
+from build_index import EMBED_MODEL, INDEX_DIR
+
 load_dotenv()
 
+MODEL = "openai/gpt-oss-20b"
+# USD per 1M tokens on Groq's paid tier. Used only for cost estimates.
+PRICE_IN, PRICE_OUT = 0.075, 0.30
+
+# Below this cosine similarity the closest FAQ is not about the user's question,
+# so we refuse instead of letting the model answer from unrelated context.
+# Picked from the threshold sweep in run_eval.py.
+SIM_THRESHOLD = 0.50
+TOP_K = 3
+
+NO_MATCH = ("I couldn't find anything in my finance knowledge base that matches this question, "
+            "so I'd rather not guess. Try rephrasing, or ask about budgeting, investing, taxes, "
+            "loans or credit.")
+
+SYSTEM_PROMPT = """You are FinTutor, a personal-finance assistant.
+Answer ONLY from the numbered sources provided. They are community answers to similar questions,
+so they can be informal, US-centric or out of date: say so when it matters.
+If the sources do not answer the question, say that plainly instead of using outside knowledge.
+Cite sources inline as [1], [2]. Keep the answer under 150 words and end with one practical tip
+if the sources support one."""
+
+
 class FinanceAIChatbot:
-    def __init__(self, api_key: str, dataset_path: str):
+    def __init__(self, api_key: str, collection: str = "faqs", threshold: float = SIM_THRESHOLD):
         if not api_key:
             raise ValueError("API key is required!")
+        self.client = Groq(api_key=api_key)
+        self.model_name = MODEL
+        self.threshold = threshold
 
-        genai.configure(api_key=api_key)
-        self.model_name = self._select_model()
-        self.model = genai.GenerativeModel(self.model_name)
-
-        self.embedder = SentenceTransformer("all-MiniLM-L6-v2")
-        self.client = chromadb.Client()
-        self.collection = self.client.get_or_create_collection("finance_faqs_context")
-        self._load_dataset(dataset_path)
+        self.embedder = SentenceTransformer(EMBED_MODEL)
+        db = chromadb.PersistentClient(path=INDEX_DIR)
+        try:
+            self.collection = db.get_collection(collection)
+        except Exception:
+            raise RuntimeError(f"Index '{collection}' not found. Run: python build_index.py")
 
         self.session_start = datetime.now()
         self.total_queries = 0
         self.response_cache = {}
         self.cache_duration = timedelta(minutes=10)
 
-        self._check_connection()
-
-    def _select_model(self):
-        return "gemini-2.5-flash" 
-
-    def _check_connection(self):
-        # verify Gemini API connectivity
-        try:
-            _ = self.model.generate_content("Connection test successful.")
-            print(f"Gemini model connected ({self.model_name})\n")
-        except Exception as e:
-            print(f"Model connection failed: {e}\n")
-
-    # dataset
-    def _load_dataset(self, dataset_path):
-        df = pd.read_csv(dataset_path)
-        df.dropna(inplace=True)
-
-        texts = df["input"].tolist()
-        answers = df["output"].tolist()
-        embeddings = self.embedder.encode(texts, show_progress_bar=True)
-
-        # Chunk large data into batches to prevent Chroma OOM
-        batch_size = 1500
-        for i in range(0, len(texts), batch_size):
-            batch_texts = texts[i : i + batch_size]
-            batch_embeds = embeddings[i : i + batch_size]
-            batch_answers = answers[i : i + batch_size]
-            self.collection.add(
-                documents=batch_texts,
-                embeddings=batch_embeds,
-                metadatas=[{"answer": a} for a in batch_answers],
-                ids=[str(j) for j in range(i, i + len(batch_texts))],
-            )
-        print(f"Dataset embedded into Chroma ({len(texts)} entries)\n")
-
-    # response logic
     def _normalize(self, text: str) -> str:
         text = str(text).lower().strip()
         text = re.sub(r"[^\w\s]", " ", text)
-        text = re.sub(r"\s+", " ", text)
-        return text.strip()
+        return re.sub(r"\s+", " ", text).strip()
 
-    def _query_backend(self, prompt: str) -> str:
-        try:
-            response = self.model.generate_content(prompt)
-            if hasattr(response, "text") and response.text:
-                return response.text.strip()
-            return "No valid response generated."
-        except Exception as e:
-            return f"Backend Error: {str(e)}"
+    def retrieve(self, query: str, k: int = TOP_K) -> list[dict]:
+        emb = self.embedder.encode([query], normalize_embeddings=True).tolist()
+        res = self.collection.query(query_embeddings=emb, n_results=k)
+        return [
+            {"question": q, "answers": m["answers"], "similarity": round(1 - d, 3)}
+            for q, m, d in zip(res["documents"][0], res["metadatas"][0], res["distances"][0])
+        ]
 
-    def _build_context(self, user_query: str, top_k: int = 3) -> str:
-        # retrieve relevant context from Chroma
-        query_emb = self.embedder.encode([user_query])
-        results = self.collection.query(query_embeddings=query_emb, n_results=top_k)
+    def _build_prompt(self, query: str, hits: list[dict]) -> str:
+        sources = "\n\n".join(
+            f"[{i}] Q: {h['question']}\nA: {h['answers']}" for i, h in enumerate(hits, 1)
+        )
+        return f"Sources:\n{sources}\n\nUser question: {query}"
 
-        context = ""
-        for i in range(len(results["documents"][0])):
-            q = results["documents"][0][i]
-            a = results["metadatas"][0][i]["answer"]
-            context += f"{i+1}. Q: {q}\nA: {a}\n\n"
-        return context
+    def complete(self, system: str, user: str, max_tokens: int = 600,
+                 client: Groq | None = None) -> tuple[str, int, int]:
+        """One chat completion. Returns (text, input tokens, output tokens)."""
+        resp = (client or self.client).chat.completions.create(
+            model=self.model_name,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.3,
+            # gpt-oss is a reasoning model; reasoning tokens count against max_tokens and add
+            # latency, and summarising three FAQs needs very little of it.
+            reasoning_effort="low",
+            max_tokens=max_tokens,
+        )
+        usage = resp.usage
+        return (resp.choices[0].message.content or "").strip(), usage.prompt_tokens, usage.completion_tokens
 
-    def get_response(self, user_query: str) -> str:
-        cache_key = self._normalize(user_query)
-        if cache_key in self.response_cache:
-            cached_response, cache_time = self.response_cache[cache_key]
-            if datetime.now() - cache_time < self.cache_duration:
-                return cached_response + "\n\n(Cached response)"
+    def get_response(self, query: str) -> dict:
+        """Returns answer, sources, status (answered | no_match | error) and cost/latency stats."""
+        t0 = time.perf_counter()
+        key = self._normalize(query)
+        cached = self.response_cache.get(key)
+        if cached and datetime.now() - cached[1] < self.cache_duration:
+            return {**cached[0], "cached": True, "latency_ms": round((time.perf_counter() - t0) * 1000)}
 
-        context = self._build_context(user_query, top_k=3)
-
-        prompt = f"""
-            You are a helpful, trustworthy financial assistant.
-            Use the dataset context below to answer the user's question accurately.
-
-            Context:
-            {context}
-
-            User Question: {user_query}
-
-            Answer clearly in under 150 words and provide one actionable insight if possible.
-        """
-
-        answer = self._query_backend(prompt)
-        self.response_cache[cache_key] = (answer, datetime.now())
         self.total_queries += 1
-        return answer
-
-
-    def chat(self):
-        print("\nFinance AI Chatbot Ready!")
-        print("Type 'exit' or 'quit' to end session.\n")
-
-        while True:
+        hits = [h for h in self.retrieve(query) if h["similarity"] >= self.threshold]
+        if not hits:
+            result = {"answer": NO_MATCH, "status": "no_match", "sources": [],
+                      "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
+        else:
             try:
-                user_input = input("You: ").strip()
-                if not user_input:
-                    continue
-
-                if user_input.lower() in ["quit", "exit", "bye"]:
-                    print("\nGoodbye! Stay financially smart.")
-                    break
-
-                if user_input.lower() == "stats":
-                    continue
-
-                response = self.get_response(user_input)
-                print(f"\nBot:\n{response}\n")
-
-            except KeyboardInterrupt:
-                print("\n\nSession interrupted.")
-                break
+                text, tin, tout = self.complete(SYSTEM_PROMPT, self._build_prompt(query, hits))
             except Exception as e:
-                print(f"\nError: {e}")
+                # Logged, not shown: provider errors can leak request details.
+                # Not cached, so the next attempt retries instead of replaying the error.
+                print(f"LLM call failed: {e}")
+                return {"answer": "The AI service is unavailable right now. Please try again.",
+                        "status": "error", "sources": [],
+                        "cached": False, "latency_ms": round((time.perf_counter() - t0) * 1000)}
+            result = {
+                "answer": text or "No answer generated.",
+                "status": "answered",
+                "sources": [{"question": h["question"], "similarity": h["similarity"]} for h in hits],
+                "input_tokens": tin,
+                "output_tokens": tout,
+                "cost_usd": (tin * PRICE_IN + tout * PRICE_OUT) / 1_000_000,
+            }
+
+        self.response_cache[key] = (result, datetime.now())
+        return {**result, "cached": False, "latency_ms": round((time.perf_counter() - t0) * 1000)}
+
 
 if __name__ == "__main__":
-    try:
-        api_key = os.getenv("AI_API_KEY")
-        dataset_path = "datasets/final_combined.csv" 
-
-        if not api_key:
-            raise ValueError("API key not found! Please set it in your .env file.")
-        if not os.path.exists(dataset_path):
-            raise FileNotFoundError(f"Dataset not found: {dataset_path}")
-
-        bot = FinanceAIChatbot(api_key, dataset_path)
-        bot.chat()
-
-    except Exception as e:
-        print(f"\nStartup failed: {e}")
+    bot = FinanceAIChatbot(os.getenv("GROQ_API_KEY"))
+    print("FinTutor ready. Type 'exit' to quit.\n")
+    while (q := input("You: ").strip()).lower() not in {"exit", "quit", "bye"}:
+        if q:
+            r = bot.get_response(q)
+            print(f"\nBot: {r['answer']}\n   [{r['status']}, {r['latency_ms']} ms]\n")
