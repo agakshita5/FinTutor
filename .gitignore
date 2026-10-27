@@ -1,6 +1,9 @@
-venv/
+.venv/
 .env
 users.json
 chats.json
 __pycache__/
-datasets/*.csv
+datasets/input_ds.csv
+chroma_db/
+.DS_Store
+notes.txt
